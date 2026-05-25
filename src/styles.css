@@ -43,7 +43,7 @@ body {
 }
 
 .sidebar-logo {
-  width: 120px;
+  width: 64px;
   max-width: 100%;
   height: auto;
   object-fit: contain;
@@ -322,7 +322,8 @@ button {
 .action-row {
   display: flex;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .test-action-row {
@@ -493,7 +494,14 @@ button {
   border: 1px solid #d4d9e1;
   border-radius: 18px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
-  overflow: hidden;
+  overflow: auto;
+}
+
+.modal-dialog-large {
+  width: min(860px, calc(100vw - 48px));
+  max-width: 960px;
+  margin: 40px auto;
+  max-height: calc(100vh - 80px);
 }
 
 .modal-full {
@@ -545,7 +553,7 @@ button {
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .form-span-2 {
@@ -615,6 +623,21 @@ td {
   padding: 8px 6px;
   text-align: left;
   vertical-align: top;
+}
+
+/* Tighter column sizing for course lists */
+.data-table th:nth-child(1), .data-table td:nth-child(1) {
+  width: 34%;
+}
+.data-table th:nth-child(2), .data-table td:nth-child(2) {
+  width: 18%;
+}
+.data-table th:nth-child(3), .data-table td:nth-child(3) {
+  width: 8%;
+}
+.data-table th:nth-child(9), .data-table td:nth-child(9) {
+  width: 92px;
+  text-align: right;
 }
 
 .success {

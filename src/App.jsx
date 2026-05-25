@@ -2,6 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { adminApi } from './api';
 import logo from '../../mobile/assets/social/fulllogo.png';
 
+const MAX_UPLOAD_DIMENSION = 1600;
+const MAX_BASE64_LENGTH = 1_200_000;
+const INITIAL_IMAGE_QUALITY = 0.82;
+
 const emptyCourse = { title: '', description: '', category: '', level: 'CPL', coverImageUrl: '', priceAmount: 0, currency: 'INR' };
 const emptyLesson = {
   title: '',
@@ -52,11 +56,69 @@ const emptyUserForm = {
   email: ''
 };
 
+const emptyContactSettings = {
+  contactEmail: '',
+  contactPhone: '',
+  contactAddress: ''
+};
+
+const emptyEnrollmentForm = {
+  userEmail: ''
+};
+
 const toLines = (text) =>
   text
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean);
+
+const readFileAsDataUrl = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Failed to read image file'));
+    reader.readAsDataURL(file);
+  });
+
+const loadImageElement = (src) =>
+  new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Failed to load image preview'));
+    image.src = src;
+  });
+
+const optimizeImageFile = async (file) => {
+  const originalDataUrl = await readFileAsDataUrl(file);
+  if (!file.type.startsWith('image/') || file.type === 'image/svg+xml') {
+    return originalDataUrl;
+  }
+
+  const image = await loadImageElement(originalDataUrl);
+  const scale = Math.min(1, MAX_UPLOAD_DIMENSION / Math.max(image.width || 1, image.height || 1));
+  const width = Math.max(1, Math.round((image.width || 1) * scale));
+  const height = Math.max(1, Math.round((image.height || 1) * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+
+  const context = canvas.getContext('2d');
+  if (!context) {
+    return originalDataUrl;
+  }
+
+  context.drawImage(image, 0, 0, width, height);
+
+  let quality = INITIAL_IMAGE_QUALITY;
+  let optimizedDataUrl = canvas.toDataURL('image/jpeg', quality);
+
+  while (optimizedDataUrl.length > MAX_BASE64_LENGTH && quality > 0.45) {
+    quality -= 0.1;
+    optimizedDataUrl = canvas.toDataURL('image/jpeg', quality);
+  }
+
+  return optimizedDataUrl.length < originalDataUrl.length ? optimizedDataUrl : originalDataUrl;
+};
 
 function App() {
   const [adminKey, setAdminKey] = useState(localStorage.getItem('pp_admin_key') || '');
@@ -72,6 +134,14 @@ function App() {
   const [editingCourseId, setEditingCourseId] = useState(null);
   const [selectedCourseId, setSelectedCourseId] = useState(null);
   const [courseModalOpen, setCourseModalOpen] = useState(false);
+  const [enrollmentsModalOpen, setEnrollmentsModalOpen] = useState(false);
+  const [selectedEnrollmentCourse, setSelectedEnrollmentCourse] = useState(null);
+  const [courseEnrollments, setCourseEnrollments] = useState([]);
+  const [enrollmentForm, setEnrollmentForm] = useState(emptyEnrollmentForm);
+  const [enrollmentSearch, setEnrollmentSearch] = useState('');
+  const [userSearch, setUserSearch] = useState('');
+  const [userSearchResults, setUserSearchResults] = useState([]);
+  const [userDropdownOpen, setUserDropdownOpen] = useState(false);
 
   const [lessons, setLessons] = useState([]);
   const [lessonForm, setLessonForm] = useState(emptyLesson);
@@ -80,6 +150,7 @@ function App() {
   const [courseModalLessons, setCourseModalLessons] = useState([]);
   const [moduleForm, setModuleForm] = useState(emptyModule);
   const [editingModuleId, setEditingModuleId] = useState(null);
+  const [moduleModalOpen, setModuleModalOpen] = useState(false);
   const [lessonEditor, setLessonEditor] = useState(emptyLessonEditor);
   const [lessonEditorOpen, setLessonEditorOpen] = useState(false);
 
@@ -88,11 +159,13 @@ function App() {
   const [editingQuestionId, setEditingQuestionId] = useState(null);
 
   const [tests, setTests] = useState([]);
+  const [testModeFilter, setTestModeFilter] = useState('all');
   const [testForm, setTestForm] = useState(emptyTest);
   const [editingTestId, setEditingTestId] = useState(null);
   const [selectedTestId, setSelectedTestId] = useState(null);
   const [testQuestions, setTestQuestions] = useState([]);
   const [enquiries, setEnquiries] = useState([]);
+  const [contactSettings, setContactSettings] = useState(emptyContactSettings);
   const [questionToAddId, setQuestionToAddId] = useState('');
   const [questionSearch, setQuestionSearch] = useState('');
   const [questionDropdownOpen, setQuestionDropdownOpen] = useState(false);
@@ -106,10 +179,13 @@ function App() {
   const [userForm, setUserForm] = useState(emptyUserForm);
   const questionDropdownRef = useRef(null);
   const questionSearchInputRef = useRef(null);
+  const userDropdownRef = useRef(null);
+  const userSearchInputRef = useRef(null);
 
   const selectedCourse = useMemo(() => courses.find((item) => item.id === selectedCourseId) || null, [courses, selectedCourseId]);
   const selectedTest = useMemo(() => tests.find((item) => item.id === selectedTestId) || null, [tests, selectedTestId]);
   const editingCourse = useMemo(() => courses.find((item) => item.id === editingCourseId) || null, [courses, editingCourseId]);
+  const selectedTestMode = selectedTest?.mode === 'exam' ? 'exam' : 'practice';
 
   const filteredCourses = useMemo(() => {
     const query = courseSearch.trim().toLowerCase();
@@ -157,10 +233,41 @@ function App() {
     );
   }, [addableQuestions, questionSearch]);
 
+  const filteredTests = useMemo(() => {
+    if (testModeFilter === 'all') return tests;
+    return (tests || []).filter((test) => (test?.mode === 'exam' ? 'exam' : 'practice') === testModeFilter);
+  }, [tests, testModeFilter]);
+
   const selectedAddableQuestion = useMemo(
     () => addableQuestions.find((question) => String(question.id) === String(questionToAddId)) || null,
     [addableQuestions, questionToAddId]
   );
+  const enrolledUserEmails = useMemo(
+    () =>
+      new Set(
+        (courseEnrollments || [])
+          .map((enrollment) => String(enrollment.userEmail || '').trim().toLowerCase())
+          .filter(Boolean)
+      ),
+    [courseEnrollments]
+  );
+  const filteredUserSearchResults = useMemo(
+    () =>
+      (userSearchResults || []).filter((user) => !enrolledUserEmails.has(String(user.email || '').trim().toLowerCase())),
+    [userSearchResults, enrolledUserEmails]
+  );
+  const filteredCourseEnrollments = useMemo(() => {
+    const query = enrollmentSearch.trim().toLowerCase();
+    if (!query) return courseEnrollments;
+    return (courseEnrollments || []).filter((enrollment) =>
+      [enrollment.userName, enrollment.userEmail]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(query)
+    );
+  }, [courseEnrollments, enrollmentSearch]);
+  const isUploadedCoverImage = String(courseForm.coverImageUrl || '').startsWith('data:image/');
 
   const withAsync = async (fn) => {
     try {
@@ -201,8 +308,12 @@ function App() {
 
   const loadEnquiries = () =>
     withAsync(async () => {
-      const data = await adminApi.listEnquiries(adminKey);
-      setEnquiries(data.enquiries || []);
+      const [enquiriesData, contactData] = await Promise.all([
+        adminApi.listEnquiries(adminKey),
+        adminApi.getContactSettings(adminKey)
+      ]);
+      setEnquiries(enquiriesData.enquiries || []);
+      setContactSettings(contactData.contact || emptyContactSettings);
     });
 
   const loadTestQuestions = (testId) =>
@@ -241,9 +352,27 @@ function App() {
   }, [questionDropdownOpen]);
 
   useEffect(() => {
+    if (!userDropdownOpen) return;
+
+    const onMouseDown = (event) => {
+      if (userDropdownRef.current && !userDropdownRef.current.contains(event.target)) {
+        setUserDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', onMouseDown);
+    return () => document.removeEventListener('mousedown', onMouseDown);
+  }, [userDropdownOpen]);
+
+  useEffect(() => {
     if (!questionDropdownOpen) return;
     questionSearchInputRef.current?.focus();
   }, [questionDropdownOpen]);
+
+  useEffect(() => {
+    if (!userDropdownOpen) return;
+    userSearchInputRef.current?.focus();
+  }, [userDropdownOpen]);
 
   const onLogin = async (e) => {
     e.preventDefault();
@@ -310,6 +439,15 @@ function App() {
     });
   };
 
+  const submitContactSettings = async (e) => {
+    e.preventDefault();
+    await withAsync(async () => {
+      const data = await adminApi.updateContactSettings(contactSettings, adminKey);
+      setContactSettings(data.contact || emptyContactSettings);
+      setMessage('Contact details updated');
+    });
+  };
+
   const submitCourse = async (e) => {
     e.preventDefault();
     await withAsync(async () => {
@@ -360,6 +498,58 @@ function App() {
     setLessonEditorOpen(false);
   };
 
+  const onViewEnrollments = async (course) => {
+    if (!course?.id) return;
+    await withAsync(async () => {
+      const data = await adminApi.listCourseEnrollments(course.id, adminKey);
+      setSelectedEnrollmentCourse(course);
+      setCourseEnrollments(data.enrollments || []);
+      setEnrollmentForm(emptyEnrollmentForm);
+      setEnrollmentSearch('');
+      setUserSearch('');
+      setUserSearchResults([]);
+      setUserDropdownOpen(false);
+      setEnrollmentsModalOpen(true);
+    });
+  };
+
+  const onCloseEnrollmentsModal = () => {
+    setEnrollmentsModalOpen(false);
+    setSelectedEnrollmentCourse(null);
+    setCourseEnrollments([]);
+    setEnrollmentForm(emptyEnrollmentForm);
+    setEnrollmentSearch('');
+    setUserSearch('');
+    setUserSearchResults([]);
+    setUserDropdownOpen(false);
+  };
+
+  const loadUsersForEnrollment = async (query = '') => {
+    const data = await adminApi.listUsers(adminKey, query);
+    setUserSearchResults(data.users || []);
+  };
+
+  const submitCourseEnrollment = async (e) => {
+    e.preventDefault();
+    if (!selectedEnrollmentCourse?.id) return;
+
+    await withAsync(async () => {
+      await adminApi.createCourseEnrollment(selectedEnrollmentCourse.id, enrollmentForm, adminKey);
+      const [enrollmentData, coursesData] = await Promise.all([
+        adminApi.listCourseEnrollments(selectedEnrollmentCourse.id, adminKey),
+        adminApi.listCourses(adminKey)
+      ]);
+      setCourseEnrollments(enrollmentData.enrollments || []);
+      setCourses(coursesData.courses || []);
+      setSelectedEnrollmentCourse((prev) => {
+        if (!prev) return prev;
+        return (coursesData.courses || []).find((course) => course.id === prev.id) || prev;
+      });
+      setEnrollmentForm(emptyEnrollmentForm);
+      setMessage('User enrolled successfully');
+    });
+  };
+
   const refreshCourseModalData = async (courseId) => {
     const [modulesResp, lessonsResp] = await Promise.all([
       adminApi.listModules(courseId, adminKey),
@@ -395,12 +585,12 @@ function App() {
   }, [courseModalOpen]);
 
   useEffect(() => {
-    if (!courseModalOpen && !userModalOpen && !userDeleteTarget && !testModalOpen && !questionModalOpen) return;
+    if (!courseModalOpen && !enrollmentsModalOpen && !userModalOpen && !userDeleteTarget && !testModalOpen && !questionModalOpen && !moduleModalOpen && !lessonEditorOpen) return;
     document.body.style.overflow = 'hidden';
     return () => {
       document.body.style.overflow = '';
     };
-  }, [courseModalOpen, userModalOpen, userDeleteTarget, testModalOpen, questionModalOpen]);
+  }, [courseModalOpen, enrollmentsModalOpen, userModalOpen, userDeleteTarget, testModalOpen, questionModalOpen, moduleModalOpen, lessonEditorOpen]);
 
   useEffect(() => {
     if (!courseModalOpen || !editingCourseId) return;
@@ -416,11 +606,46 @@ function App() {
       description: mod.description || '',
       position: mod.position ?? ''
     });
+    setModuleModalOpen(true);
   };
 
   const onCancelModuleEdit = () => {
     setEditingModuleId(null);
     setModuleForm(emptyModule);
+    setModuleModalOpen(false);
+  };
+
+  const onCreateModule = () => {
+    console.log('onCreateModule clicked');
+    setEditingModuleId(null);
+    setModuleForm(emptyModule);
+    setModuleModalOpen(true);
+  };
+
+  const handleCoverUpload = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    try {
+      const optimizedImage = await optimizeImageFile(file);
+      setCourseForm((p) => ({ ...p, coverImageUrl: optimizedImage }));
+    } catch (err) {
+      setError(err.message || 'Failed to prepare cover image');
+    } finally {
+      e.target.value = '';
+    }
+  };
+
+  const handleLessonVideoThumbnailUpload = async (index, e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    try {
+      const optimizedImage = await optimizeImageFile(file);
+      updateLessonVideo(index, 'thumbnailUrl', optimizedImage);
+    } catch (err) {
+      setError(err.message || 'Failed to prepare thumbnail image');
+    } finally {
+      e.target.value = '';
+    }
   };
 
   const submitModule = async (e) => {
@@ -437,6 +662,7 @@ function App() {
       await refreshCourseModalData(editingCourseId);
       setEditingModuleId(null);
       setModuleForm(emptyModule);
+      setModuleModalOpen(false);
     });
   };
 
@@ -680,8 +906,8 @@ function App() {
 
     setEditingQuestionId(question.id);
     setQuestionForm({
-      mode: question.mode || 'practice',
-      subject: question.subject || '',
+      mode: selectedTestMode,
+      subject: selectedTest?.subject || question.subject || '',
       prompt: question.prompt || '',
       explanationCorrect: question.explanationCorrect || '',
       explanationWrong: question.explanationWrong || '',
@@ -695,7 +921,7 @@ function App() {
     setEditingQuestionId(null);
     setQuestionForm((prev) => ({
       ...prev,
-      mode: selectedTest?.mode || 'practice',
+      mode: selectedTestMode,
       subject: selectedTest?.subject || '',
       prompt: '',
       explanationCorrect: '',
@@ -708,7 +934,7 @@ function App() {
     if (!selectedTest) return;
     setEditingQuestionId(null);
     setQuestionForm({
-      mode: selectedTest.mode || 'practice',
+      mode: selectedTestMode,
       subject: selectedTest.subject || '',
       prompt: '',
       explanationCorrect: '',
@@ -786,6 +1012,16 @@ function App() {
     });
   };
 
+  const onPublishTest = async (testId) => {
+    if (!window.confirm('Publish this test so it becomes visible to users?')) return;
+    await withAsync(async () => {
+      await adminApi.publishTest(testId, adminKey);
+      setMessage('Test published');
+      const data = await adminApi.listTests(adminKey);
+      setTests(data.tests || []);
+    });
+  };
+
   const onSelectTest = async (testId) => {
       if (selectedTestId === testId) {
         setSelectedTestId(null);
@@ -851,7 +1087,7 @@ function App() {
       const selected = tests.find((item) => item.id === selectedTestId) || null;
       const payload = {
         ...questionForm,
-        mode: selected?.mode || questionForm.mode,
+        mode: selected?.mode === 'exam' ? 'exam' : 'practice',
         subject: selected?.subject || questionForm.subject
       };
       if (editingQuestionId) {
@@ -864,7 +1100,7 @@ function App() {
       setQuestionModalOpen(false);
       setQuestionForm((prev) => ({
         ...prev,
-        mode: selected?.mode || 'practice',
+        mode: selected?.mode === 'exam' ? 'exam' : 'practice',
         subject: selected?.subject || '',
         prompt: '',
         explanationCorrect: '',
@@ -1003,6 +1239,56 @@ function App() {
           </div>
         ) : null}
 
+        {moduleModalOpen ? (
+          <div
+            className="modal-overlay"
+            role="dialog"
+            aria-modal="true"
+            style={{ zIndex: 80 }}
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) onCancelModuleEdit();
+            }}
+          >
+            <div className="modal-dialog" onMouseDown={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <div>
+                  <div className="modal-title">{editingModuleId ? 'Edit Module' : 'Create Module'}</div>
+                </div>
+                <div className="row">
+                  <button type="button" onClick={onCancelModuleEdit}>
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              <div className="modal-body">
+                <form onSubmit={submitModule}>
+                  <div className="form-grid">
+                    <div>
+                      <label className="field-label">Title</label>
+                      <input placeholder="Module title" value={moduleForm.title} onChange={(e) => setModuleForm((p) => ({ ...p, title: e.target.value }))} required />
+                    </div>
+                    <div>
+                      <label className="field-label">Position</label>
+                      <input type="number" placeholder="1" value={moduleForm.position} onChange={(e) => setModuleForm((p) => ({ ...p, position: e.target.value }))} />
+                    </div>
+                    <div className="form-span-2">
+                      <label className="field-label">Description</label>
+                      <textarea rows="2" placeholder="Optional" value={moduleForm.description} onChange={(e) => setModuleForm((p) => ({ ...p, description: e.target.value }))} />
+                    </div>
+                  </div>
+                  <div className="modal-footer">
+                    <button type="submit">{editingModuleId ? 'Update Module' : 'Create Module'}</button>
+                    <button type="button" onClick={onCancelModuleEdit}>
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         {activeTab === 'courses' ? (
           <div className="grid cols-2">
             <div className="card span-2">
@@ -1029,8 +1315,6 @@ function App() {
                       <th>Category</th>
                       <th>Level</th>
                       <th>Price</th>
-                      <th>Modules</th>
-                      <th>Lessons</th>
                       <th>Enrollments</th>
                       <th>Updated</th>
                       <th style={{ width: 220 }}>Actions</th>
@@ -1058,9 +1342,19 @@ function App() {
                           <td>{course.category}</td>
                           <td>{course.level}</td>
                           <td>{priceLabel}</td>
-                          <td>{course.modulesCount ?? 0}</td>
-                          <td>{course.lessonsCount ?? 0}</td>
-                          <td>{course.enrollmentsCount ?? 0}</td>
+                          <td>
+                            <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+                              <span>{course.enrollmentsCount ?? 0}</span>
+                              <button
+                                type="button"
+                                title="View enrollments"
+                                aria-label="View enrollments"
+                                onClick={() => onViewEnrollments(course)}
+                              >
+                                View
+                              </button>
+                            </div>
+                          </td>
                           <td>{course.updatedAt ? new Date(course.updatedAt).toLocaleDateString() : '-'}</td>
                           <td>
                             <div className="course-actions">
@@ -1093,7 +1387,7 @@ function App() {
                     })}
                     {filteredCourses.length === 0 ? (
                       <tr>
-                        <td colSpan={9} className="empty-cell">
+                        <td colSpan={7} className="empty-cell">
                           No courses found.
                         </td>
                       </tr>
@@ -1109,6 +1403,53 @@ function App() {
 
         {activeTab === 'enquiries' ? (
           <div className="grid cols-2">
+            <div className="card span-2">
+              <div className="card-header-row">
+                <h3 style={{ margin: 0 }}>Contact Us Details</h3>
+                <p className="muted" style={{ margin: 0 }}>
+                  Update the public website contact cards
+                </p>
+              </div>
+
+              <form onSubmit={submitContactSettings}>
+                <div className="form-grid">
+                  <div>
+                    <label className="field-label">Contact Email</label>
+                    <input
+                      type="email"
+                      value={contactSettings.contactEmail}
+                      onChange={(e) => setContactSettings((prev) => ({ ...prev, contactEmail: e.target.value }))}
+                      placeholder="support@pilotpathshala.com"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="field-label">Contact Phone</label>
+                    <input
+                      value={contactSettings.contactPhone}
+                      onChange={(e) => setContactSettings((prev) => ({ ...prev, contactPhone: e.target.value }))}
+                      placeholder="+91 98765 43210"
+                      required
+                    />
+                  </div>
+                  <div className="form-span-2">
+                    <label className="field-label">Contact Address</label>
+                    <textarea
+                      rows="3"
+                      value={contactSettings.contactAddress}
+                      onChange={(e) => setContactSettings((prev) => ({ ...prev, contactAddress: e.target.value }))}
+                      placeholder="Aviation Academy, India"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="modal-footer">
+                  <button type="submit">Save Contact Details</button>
+                </div>
+              </form>
+            </div>
+
             <div className="card span-2">
               <div className="card-header-row">
                 <h3 style={{ margin: 0 }}>Website Enquiries</h3>
@@ -1149,6 +1490,142 @@ function App() {
                     ) : null}
                   </tbody>
                 </table>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {enrollmentsModalOpen ? (
+          <div
+            className="modal-overlay"
+            role="dialog"
+            aria-modal="true"
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) onCloseEnrollmentsModal();
+            }}
+          >
+            <div className="modal modal-full" onMouseDown={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <div>
+                  <div className="modal-title">Course Enrollments</div>
+                  <div className="modal-subtitle">
+                    {selectedEnrollmentCourse?.title || 'Selected course'} • {courseEnrollments.length} enrollment{courseEnrollments.length === 1 ? '' : 's'}
+                  </div>
+                </div>
+                <div className="row">
+                  <button type="button" onClick={onCloseEnrollmentsModal}>
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              <div className="modal-body">
+                <form onSubmit={submitCourseEnrollment}>
+                  <label className="field-label">User Email</label>
+                  <div className="question-toolbar" style={{ marginBottom: 0, alignItems: 'stretch' }}>
+                    <div className="question-dropdown" ref={userDropdownRef} style={{ maxWidth: 420 }}>
+                      <button
+                        type="button"
+                        className="question-dropdown-trigger"
+                        onClick={async () => {
+                          const nextOpen = !userDropdownOpen;
+                          setUserDropdownOpen(nextOpen);
+                          if (nextOpen) {
+                            await loadUsersForEnrollment(userSearch);
+                          }
+                        }}
+                      >
+                        <span className="question-dropdown-trigger-text">
+                          {enrollmentForm.userEmail || 'Search and select user email'}
+                        </span>
+                        <span className="question-dropdown-trigger-icon">{userDropdownOpen ? '▲' : '▼'}</span>
+                      </button>
+
+                      {userDropdownOpen ? (
+                        <div className="question-dropdown-menu">
+                          <input
+                            ref={userSearchInputRef}
+                            className="question-dropdown-search"
+                            placeholder="Search users by name or email..."
+                            value={userSearch}
+                            onChange={async (e) => {
+                              const value = e.target.value;
+                              setUserSearch(value);
+                              await loadUsersForEnrollment(value);
+                            }}
+                          />
+                          <div className="question-dropdown-list">
+                            {filteredUserSearchResults.length === 0 ? (
+                              <div className="question-dropdown-empty">No users found.</div>
+                            ) : (
+                              filteredUserSearchResults.map((user) => (
+                                <button
+                                  key={user.id}
+                                  type="button"
+                                  className={`question-dropdown-option ${
+                                    enrollmentForm.userEmail === user.email ? 'is-selected' : ''
+                                  }`}
+                                  onClick={() => {
+                                    setEnrollmentForm({ userEmail: user.email || '' });
+                                    setUserDropdownOpen(false);
+                                  }}
+                                >
+                                  <span className="question-dropdown-option-subject">{user.name || 'Unnamed User'}</span>
+                                  <span className="question-dropdown-option-prompt">{user.email}</span>
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <button type="submit" style={{ whiteSpace: 'nowrap' }}>
+                      Add Enrollment
+                    </button>
+                  </div>
+                </form>
+
+                <div style={{ marginTop: 12, maxWidth: 420 }}>
+                  <label className="field-label">Search Enrolled User</label>
+                  <input
+                    value={enrollmentSearch}
+                    onChange={(e) => setEnrollmentSearch(e.target.value)}
+                    placeholder="Search by user name or email..."
+                  />
+                </div>
+
+                <div className="table-wrap" style={{ marginTop: 12 }}>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>User</th>
+                        <th>Email</th>
+                        <th>Progress</th>
+                        <th>Enrolled</th>
+                        <th>Updated</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredCourseEnrollments.map((enrollment) => (
+                        <tr key={enrollment.id}>
+                          <td>{enrollment.userName || '-'}</td>
+                          <td>{enrollment.userEmail || '-'}</td>
+                          <td>{Math.round(Number(enrollment.progress || 0))}%</td>
+                          <td>{enrollment.createdAt ? new Date(enrollment.createdAt).toLocaleString() : '-'}</td>
+                          <td>{enrollment.updatedAt ? new Date(enrollment.updatedAt).toLocaleString() : '-'}</td>
+                        </tr>
+                      ))}
+                      {filteredCourseEnrollments.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="empty-cell">
+                            No enrolled users match this search.
+                          </td>
+                        </tr>
+                      ) : null}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           </div>
@@ -1256,6 +1733,15 @@ function App() {
               </div>
 
               <form className="modal-body" onSubmit={submitQuestionInTest}>
+                <div className="form-grid">
+                  <div>
+                    <label className="field-label">Mode</label>
+                    <select value={questionForm.mode} disabled>
+                      <option value="practice">Practice</option>
+                      <option value="exam">Exam</option>
+                    </select>
+                  </div>
+                </div>
                 <textarea
                   placeholder="Prompt"
                   rows="3"
@@ -1268,14 +1754,14 @@ function App() {
                   rows="2"
                   value={questionForm.explanationCorrect}
                   onChange={(e) => setQuestionForm((p) => ({ ...p, explanationCorrect: e.target.value }))}
-                  required={selectedTest?.mode !== 'exam'}
+                  required={questionForm.mode !== 'exam'}
                 />
                 <textarea
                   placeholder="Explanation (wrong)"
                   rows="2"
                   value={questionForm.explanationWrong}
                   onChange={(e) => setQuestionForm((p) => ({ ...p, explanationWrong: e.target.value }))}
-                  required={selectedTest?.mode !== 'exam'}
+                  required={questionForm.mode !== 'exam'}
                 />
                 <h4>Options</h4>
                 {questionForm.options.map((option, index) => (
@@ -1455,9 +1941,19 @@ function App() {
                         <label className="field-label">Cover Image URL</label>
                         <input
                           placeholder="https://..."
-                          value={courseForm.coverImageUrl}
+                          value={isUploadedCoverImage ? '' : courseForm.coverImageUrl}
                           onChange={(e) => setCourseForm((p) => ({ ...p, coverImageUrl: e.target.value }))}
                         />
+                        {isUploadedCoverImage ? <div className="field-help">Uploaded image selected.</div> : null}
+                        <div style={{ marginTop: 8 }}>
+                          <label className="field-label">Or upload image</label>
+                          <input type="file" accept="image/*" onChange={handleCoverUpload} />
+                        </div>
+                        {courseForm.coverImageUrl ? (
+                          <div style={{ marginTop: 8 }}>
+                            <img src={courseForm.coverImageUrl} alt="cover" style={{ maxWidth: '100%', maxHeight: 160, borderRadius: 8 }} />
+                          </div>
+                        ) : null}
                       </div>
                       <div>
                         <label className="field-label">Price Amount (0 = Free)</label>
@@ -1492,9 +1988,7 @@ function App() {
 
                     <div className="modal-footer">
                       <button type="submit">{editingCourseId ? 'Update Course' : 'Create Course'}</button>
-                      <button type="button" onClick={onCloseCourseModal}>
-                        Cancel
-                      </button>
+                    92px
                     </div>
                   </form>
 
@@ -1548,50 +2042,12 @@ function App() {
                         <div className="modal-list">
                           <div className="section-head">
                             <h3 style={{ marginTop: 0 }}>Modules</h3>
-                            <button type="button" onClick={onCancelModuleEdit}>
-                              New Module
-                            </button>
-                          </div>
-
-                          <form className="inline-form" onSubmit={submitModule}>
-                            <div className="form-grid">
-                              <div>
-                                <label className="field-label">Title</label>
-                                <input
-                                  placeholder="Module title"
-                                  value={moduleForm.title}
-                                  onChange={(e) => setModuleForm((p) => ({ ...p, title: e.target.value }))}
-                                  required
-                                />
-                              </div>
-                              <div>
-                                <label className="field-label">Position</label>
-                                <input
-                                  type="number"
-                                  placeholder="1"
-                                  value={moduleForm.position}
-                                  onChange={(e) => setModuleForm((p) => ({ ...p, position: e.target.value }))}
-                                />
-                              </div>
-                              <div className="form-span-2">
-                                <label className="field-label">Description</label>
-                                <textarea
-                                  rows="2"
-                                  placeholder="Optional"
-                                  value={moduleForm.description}
-                                  onChange={(e) => setModuleForm((p) => ({ ...p, description: e.target.value }))}
-                                />
-                              </div>
-                            </div>
-                            <div className="row" style={{ justifyContent: 'flex-end' }}>
-                              <button type="submit">{editingModuleId ? 'Update Module' : 'Create Module'}</button>
-                              {editingModuleId ? (
-                                <button type="button" onClick={onCancelModuleEdit}>
-                                  Cancel
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                <button type="button" onClick={onCreateModule}>
+                                  New Module
                                 </button>
-                              ) : null}
-                            </div>
-                          </form>
+                              </div>
+                          </div>
 
                           <table className="mini-table">
                             <thead>
@@ -1684,151 +2140,171 @@ function App() {
                           </table>
 
                           {lessonEditorOpen ? (
-                            <div className="drawer">
-                              <div className="drawer-head">
-                                <div>
-                                  <div className="drawer-title">{lessonEditor.id ? 'Edit Lesson' : 'Create Lesson'}</div>
-                                  <div className="drawer-sub muted">Edit lesson fields, notes/takeaways, and videos.</div>
-                                </div>
-                                <button type="button" onClick={closeLessonEditor}>
-                                  Close
-                                </button>
-                              </div>
-
-                              <form onSubmit={submitLessonEditor} className="drawer-body">
-                                <div className="form-grid">
+                            <div
+                              className="modal-overlay"
+                              role="dialog"
+                              aria-modal="true"
+                              onMouseDown={(e) => {
+                                if (e.target === e.currentTarget) closeLessonEditor();
+                              }}
+                            >
+                              <div className="modal-dialog modal-dialog-large" onMouseDown={(e) => e.stopPropagation()}>
+                                <div className="modal-header">
                                   <div>
-                                    <label className="field-label">Title</label>
-                                    <input value={lessonEditor.title} onChange={(e) => setLessonEditor((p) => ({ ...p, title: e.target.value }))} required />
+                                    <div className="modal-title">{lessonEditor.id ? 'Edit Lesson' : 'Create Lesson'}</div>
+                                    <div className="drawer-sub muted">Edit lesson fields, notes/takeaways, and videos.</div>
                                   </div>
-                                  <div>
-                                    <label className="field-label">Module</label>
-                                    <select value={lessonEditor.moduleId} onChange={(e) => setLessonEditor((p) => ({ ...p, moduleId: e.target.value }))}>
-                                      <option value="">No module</option>
-                                      {(courseModalModules || []).map((m) => (
-                                        <option key={m.id} value={String(m.id)}>
-                                          {m.title}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  </div>
-                                  <div>
-                                    <label className="field-label">Subtitle</label>
-                                    <input value={lessonEditor.subtitle} onChange={(e) => setLessonEditor((p) => ({ ...p, subtitle: e.target.value }))} />
-                                  </div>
-                                  <div>
-                                    <label className="field-label">Position</label>
-                                    <input
-                                      type="number"
-                                      value={lessonEditor.position}
-                                      onChange={(e) => setLessonEditor((p) => ({ ...p, position: e.target.value }))}
-                                      placeholder="1"
-                                    />
-                                  </div>
-                                  <div className="form-span-2">
-                                    <label className="field-label">Summary</label>
-                                    <textarea rows="2" value={lessonEditor.summary} onChange={(e) => setLessonEditor((p) => ({ ...p, summary: e.target.value }))} />
-                                  </div>
-                                  <div className="form-span-2">
-                                    <label className="field-label">Notes (one per line)</label>
-                                    <textarea rows="3" value={lessonEditor.notesText} onChange={(e) => setLessonEditor((p) => ({ ...p, notesText: e.target.value }))} />
-                                  </div>
-                                  <div className="form-span-2">
-                                    <label className="field-label">Takeaways (one per line)</label>
-                                    <textarea
-                                      rows="3"
-                                      value={lessonEditor.takeawaysText}
-                                      onChange={(e) => setLessonEditor((p) => ({ ...p, takeawaysText: e.target.value }))}
-                                    />
+                                  <div className="row">
+                                    <button type="button" onClick={closeLessonEditor}>
+                                      Close
+                                    </button>
                                   </div>
                                 </div>
 
-                                <div style={{ height: 10 }} />
-                                <div className="section-head">
-                                  <h3 style={{ margin: 0 }}>Videos</h3>
-                                  <button type="button" onClick={addLessonVideoRow}>
-                                    Add Video
-                                  </button>
-                                </div>
+                                <form onSubmit={submitLessonEditor} className="drawer-body">
+                                  <div className="form-grid">
+                                    <div>
+                                      <label className="field-label">Title</label>
+                                      <input value={lessonEditor.title} onChange={(e) => setLessonEditor((p) => ({ ...p, title: e.target.value }))} required />
+                                    </div>
+                                    <div>
+                                      <label className="field-label">Module</label>
+                                      <select value={lessonEditor.moduleId} onChange={(e) => setLessonEditor((p) => ({ ...p, moduleId: e.target.value }))}>
+                                        <option value="">No module</option>
+                                        {(courseModalModules || []).map((m) => (
+                                          <option key={m.id} value={String(m.id)}>
+                                            {m.title}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                    <div>
+                                      <label className="field-label">Subtitle</label>
+                                      <input value={lessonEditor.subtitle} onChange={(e) => setLessonEditor((p) => ({ ...p, subtitle: e.target.value }))} />
+                                    </div>
+                                    <div>
+                                      <label className="field-label">Position</label>
+                                      <input
+                                        type="number"
+                                        value={lessonEditor.position}
+                                        onChange={(e) => setLessonEditor((p) => ({ ...p, position: e.target.value }))}
+                                        placeholder="1"
+                                      />
+                                    </div>
+                                    <div className="form-span-2">
+                                      <label className="field-label">Summary</label>
+                                      <textarea rows="2" value={lessonEditor.summary} onChange={(e) => setLessonEditor((p) => ({ ...p, summary: e.target.value }))} />
+                                    </div>
+                                    <div className="form-span-2">
+                                      <label className="field-label">Notes (one per line)</label>
+                                      <textarea rows="3" value={lessonEditor.notesText} onChange={(e) => setLessonEditor((p) => ({ ...p, notesText: e.target.value }))} />
+                                    </div>
+                                    <div className="form-span-2">
+                                      <label className="field-label">Takeaways (one per line)</label>
+                                      <textarea
+                                        rows="3"
+                                        value={lessonEditor.takeawaysText}
+                                        onChange={(e) => setLessonEditor((p) => ({ ...p, takeawaysText: e.target.value }))}
+                                      />
+                                    </div>
+                                  </div>
 
-                                {(lessonEditor.videos || []).map((v, idx) => (
-                                  <div key={`${idx}`} className="video-card">
-                                    <div className="video-row-top">
-                                      <div>
-                                        <label className="field-label">Pos</label>
-                                        <input
-                                          className="video-pos"
-                                          type="number"
-                                          value={v.position}
-                                          onChange={(e) => updateLessonVideo(idx, 'position', e.target.value)}
-                                          placeholder="1"
-                                        />
+                                  <div style={{ height: 10 }} />
+                                  <div className="section-head">
+                                    <h3 style={{ margin: 0 }}>Videos</h3>
+                                    <button type="button" onClick={addLessonVideoRow}>
+                                      Add Video
+                                    </button>
+                                  </div>
+
+                                  {(lessonEditor.videos || []).map((v, idx) => (
+                                    <div key={`${idx}`} className="video-card">
+                                      <div className="video-row-top">
+                                        <div>
+                                          <label className="field-label">Pos</label>
+                                          <input
+                                            className="video-pos"
+                                            type="number"
+                                            value={v.position}
+                                            onChange={(e) => updateLessonVideo(idx, 'position', e.target.value)}
+                                            placeholder="1"
+                                          />
+                                        </div>
+                                        <div className="video-top-title">
+                                          <label className="field-label">Title</label>
+                                          <input
+                                            className="video-title"
+                                            value={v.title}
+                                            onChange={(e) => updateLessonVideo(idx, 'title', e.target.value)}
+                                            placeholder={`Video ${idx + 1}`}
+                                          />
+                                        </div>
+                                        <div>
+                                          <label className="field-label">Minutes</label>
+                                          <input
+                                            className="video-dur"
+                                            type="number"
+                                            min="1"
+                                            value={v.durationMinutes}
+                                            onChange={(e) => updateLessonVideo(idx, 'durationMinutes', e.target.value)}
+                                            placeholder="34"
+                                            required={idx === 0}
+                                          />
+                                        </div>
+                                        <div className="video-top-actions">
+                                          <label className="field-label">&nbsp;</label>
+                                          <button
+                                            type="button"
+                                            className="icon-btn danger"
+                                            title="Remove video"
+                                            onClick={() => removeLessonVideoRow(idx)}
+                                            disabled={(lessonEditor.videos || []).length <= 1}
+                                          >
+                                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                                              <path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 1h4v2H4V5h4l1-1z" />
+                                            </svg>
+                                          </button>
+                                        </div>
                                       </div>
-                                      <div className="video-top-title">
-                                        <label className="field-label">Title</label>
+
+                                      <div className="video-row-url">
+                                        <label className="field-label">Video URL {idx === 0 ? '(Main video)' : ''}</label>
                                         <input
-                                          className="video-title"
-                                          value={v.title}
-                                          onChange={(e) => updateLessonVideo(idx, 'title', e.target.value)}
-                                          placeholder={`Video ${idx + 1}`}
-                                        />
-                                      </div>
-                                      <div>
-                                        <label className="field-label">Minutes</label>
-                                        <input
-                                          className="video-dur"
-                                          type="number"
-                                          min="1"
-                                          value={v.durationMinutes}
-                                          onChange={(e) => updateLessonVideo(idx, 'durationMinutes', e.target.value)}
-                                          placeholder="34"
+                                          value={v.videoUrl}
+                                          onChange={(e) => updateLessonVideo(idx, 'videoUrl', e.target.value)}
+                                          placeholder="https://..."
                                           required={idx === 0}
                                         />
                                       </div>
-                                      <div className="video-top-actions">
-                                        <label className="field-label">&nbsp;</label>
-                                        <button
-                                          type="button"
-                                          className="icon-btn danger"
-                                          title="Remove video"
-                                          onClick={() => removeLessonVideoRow(idx)}
-                                          disabled={(lessonEditor.videos || []).length <= 1}
-                                        >
-                                          <svg viewBox="0 0 24 24" aria-hidden="true">
-                                            <path d="M6 7h12l-1 14H7L6 7zm3-3h6l1 1h4v2H4V5h4l1-1z" />
-                                          </svg>
-                                        </button>
+
+                                      <div className="video-row-url">
+                                        <label className="field-label">Thumbnail URL</label>
+                                        <input
+                                          value={v.thumbnailUrl}
+                                          onChange={(e) => updateLessonVideo(idx, 'thumbnailUrl', e.target.value)}
+                                          placeholder="https://..."
+                                        />
+                                        <div style={{ marginTop: 8 }}>
+                                          <label className="field-label">Or upload thumbnail</label>
+                                          <input type="file" accept="image/*" onChange={(e) => handleLessonVideoThumbnailUpload(idx, e)} />
+                                        </div>
+                                        {v.thumbnailUrl ? (
+                                          <div style={{ marginTop: 8 }}>
+                                            <img src={v.thumbnailUrl} alt={`thumb-${idx}`} style={{ maxWidth: 220, maxHeight: 120, borderRadius: 8 }} />
+                                          </div>
+                                        ) : null}
                                       </div>
                                     </div>
+                                  ))}
 
-                                    <div className="video-row-url">
-                                      <label className="field-label">Video URL {idx === 0 ? '(Main video)' : ''}</label>
-                                      <input
-                                        value={v.videoUrl}
-                                        onChange={(e) => updateLessonVideo(idx, 'videoUrl', e.target.value)}
-                                        placeholder="https://..."
-                                        required={idx === 0}
-                                      />
-                                    </div>
-
-                                    <div className="video-row-url">
-                                      <label className="field-label">Thumbnail URL</label>
-                                      <input
-                                        value={v.thumbnailUrl}
-                                        onChange={(e) => updateLessonVideo(idx, 'thumbnailUrl', e.target.value)}
-                                        placeholder="https://..."
-                                      />
-                                    </div>
+                                  <div className="modal-footer">
+                                    <button type="submit">{lessonEditor.id ? 'Update Lesson' : 'Create Lesson'}</button>
+                                    <button type="button" onClick={closeLessonEditor}>
+                                      Cancel
+                                    </button>
                                   </div>
-                                ))}
-
-                                <div className="modal-footer">
-                                  <button type="submit">{lessonEditor.id ? 'Update Lesson' : 'Create Lesson'}</button>
-                                  <button type="button" onClick={closeLessonEditor}>
-                                    Cancel
-                                  </button>
-                                </div>
-                              </form>
+                                </form>
+                              </div>
                             </div>
                           ) : null}
                         </div>
@@ -1850,9 +2326,16 @@ function App() {
             <div className="card span-2">
               <div className="card-header-row">
                 <h3 style={{ margin: 0 }}>Existing Tests</h3>
-                <button type="button" onClick={onCreateTest}>
-                  New Test
-                </button>
+                <div className="row" style={{ justifyContent: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
+                  <select value={testModeFilter} onChange={(e) => setTestModeFilter(e.target.value)}>
+                    <option value="all">All Modes</option>
+                    <option value="practice">Practice</option>
+                    <option value="exam">Exam</option>
+                  </select>
+                  <button type="button" onClick={onCreateTest}>
+                    New Test
+                  </button>
+                </div>
               </div>
               <table>
                 <thead>
@@ -1860,23 +2343,33 @@ function App() {
                     <th>Mode</th>
                     <th>Title</th>
                     <th>Subject</th>
+                    <th>Status</th>
                     <th>#Q</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {tests.map((test) => {
+                  {filteredTests.map((test) => {
                     const isSelected = selectedTestId === test.id;
                     return (
                       <tr key={test.id}>
                         <td>{test.mode}</td>
                         <td>{test.title}</td>
                         <td>{test.subject || '-'}</td>
+                        <td>{test.isPublished ? 'Published' : 'Draft'}</td>
                         <td>{test.questionsCount ?? 0}</td>
                         <td>
                           <div className="action-row test-action-row">
                             <button type="button" onClick={() => onSelectTest(test.id)}>
                               {isSelected ? 'Close' : 'View'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onPublishTest(test.id)}
+                              disabled={Boolean(test.isPublished)}
+                              title={test.isPublished ? 'Already published' : 'Publish test'}
+                            >
+                              {test.isPublished ? 'Published' : 'Publish'}
                             </button>
                             <button
                               type="button"
@@ -1905,6 +2398,13 @@ function App() {
                       </tr>
                     );
                   })}
+                  {filteredTests.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="empty-cell">
+                        No tests found for the selected mode.
+                      </td>
+                    </tr>
+                  ) : null}
                 </tbody>
               </table>
             </div>

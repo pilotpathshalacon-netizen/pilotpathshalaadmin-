@@ -21,10 +21,17 @@ const request = async ({ path, method = 'GET', adminKey, body }) => {
 export const adminApi = {
   getOverview: (adminKey) => request({ path: '/overview', adminKey }),
   listEnquiries: (adminKey) => request({ path: '/enquiries', adminKey }),
+  listUsers: (adminKey, query = '') =>
+    request({ path: `/users${query ? `?q=${encodeURIComponent(query)}` : ''}`, adminKey }),
+  getContactSettings: (adminKey) => request({ path: '/contact-settings', adminKey }),
+  updateContactSettings: (payload, adminKey) => request({ path: '/contact-settings', method: 'PUT', body: payload, adminKey }),
   updateUser: (userId, payload, adminKey) => request({ path: `/users/${userId}`, method: 'PUT', body: payload, adminKey }),
   deleteUser: (userId, adminKey) => request({ path: `/users/${userId}`, method: 'DELETE', adminKey }),
 
   listCourses: (adminKey) => request({ path: '/courses', adminKey }),
+  listCourseEnrollments: (courseId, adminKey) => request({ path: `/courses/${courseId}/enrollments`, adminKey }),
+  createCourseEnrollment: (courseId, payload, adminKey) =>
+    request({ path: `/courses/${courseId}/enrollments`, method: 'POST', body: payload, adminKey }),
   createCourse: (payload, adminKey) => request({ path: '/courses', method: 'POST', body: payload, adminKey }),
   updateCourse: (courseId, payload, adminKey) =>
     request({ path: `/courses/${courseId}`, method: 'PUT', body: payload, adminKey }),
@@ -49,6 +56,7 @@ export const adminApi = {
 
   listTests: (adminKey) => request({ path: '/tests', adminKey }),
   createTest: (payload, adminKey) => request({ path: '/tests', method: 'POST', body: payload, adminKey }),
+  publishTest: (testId, adminKey) => request({ path: `/tests/${testId}/publish`, method: 'PUT', adminKey }),
   updateTest: (testId, payload, adminKey) => request({ path: `/tests/${testId}`, method: 'PUT', body: payload, adminKey }),
   deleteTest: (testId, adminKey) => request({ path: `/tests/${testId}`, method: 'DELETE', adminKey }),
 
