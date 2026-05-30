@@ -47,7 +47,8 @@ const emptyTest = {
   mode: 'practice',
   title: '',
   subject: '',
-  description: ''
+  description: '',
+  durationMinutes: ''
 };
 
 const emptyUserForm = {
@@ -984,7 +985,8 @@ function App() {
       mode: test.mode || 'practice',
       title: test.title || '',
       subject: test.subject || '',
-      description: test.description || ''
+      description: test.description || '',
+      durationMinutes: test.durationMinutes || ''
     });
     setTestModalOpen(true);
   };
@@ -1693,6 +1695,16 @@ function App() {
                       rows="4"
                       value={testForm.description}
                       onChange={(e) => setTestForm((p) => ({ ...p, description: e.target.value }))}
+                    />
+                  </div>
+                  <div>
+                    <label className="field-label">Duration (minutes)</label>
+                    <input
+                      type="number"
+                      placeholder="Optional test duration"
+                      value={testForm.durationMinutes}
+                      onChange={(e) => setTestForm((p) => ({ ...p, durationMinutes: e.target.value }))}
+                      min="1"
                     />
                   </div>
                 </div>
